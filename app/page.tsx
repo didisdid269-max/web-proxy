@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const EXAMPLES = [
+  { name: "CrazyGames", url: "https://www.crazygames.com" },
   { name: "Example.com", url: "https://example.com" },
   { name: "Hacker News", url: "https://news.ycombinator.com" },
   { name: "Wikipedia", url: "https://en.wikipedia.org/wiki/Main_Page" },
-  { name: "Reddit (Old)", url: "https://old.reddit.com" },
 ];
 
 function normalizeInput(raw: string): string {
@@ -50,6 +50,7 @@ export default function ProxyBrowserPage() {
     setInput(normalized);
     setFrameSrc(toProxyPath(normalized));
     setLoading(true);
+    iframeRef.current?.removeAttribute("srcdoc");
 
     if (pushHistory) {
       const idx = histIdxRef.current;
@@ -58,45 +59,52 @@ export default function ProxyBrowserPage() {
     }
   }, []);
 
-  const submitForm = useCallback(async (url: string, method: string, data: Record<string, string>) => {
-    const normalized = normalizeInput(url);
-    setTargetUrl(normalized);
-    setInput(normalized);
-    setLoading(true);
+  const submitForm = useCallback(
+    async (url: string, method: string, data: Record<string, string>) => {
+      const normalized = normalizeInput(url);
+      setTargetUrl(normalized);
+      setInput(normalized);
+      setLoading(true);
 
-    try {
-      const init: RequestInit = { method: method.toUpperCase() };
-      if (init.method === "POST") {
-        init.headers = { "Content-Type": "application/x-www-form-urlencoded" };
-        init.body = new URLSearchParams(
-          Object.entries(data).map(([k, v]) => [k, String(v)]),
-        ).toString();
+      try {
+        const init: RequestInit = { method: method.toUpperCase() };
+        if (init.method === "POST") {
+          init.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+          init.body = new URLSearchParams(
+            Object.entries(data).map(([k, v]) => [k, String(v)]),
+          ).toString();
+        }
+        const res = await fetch(toProxyPath(normalized), init);
+        const html = await res.text();
+        const frame = iframeRef.current;
+        if (!frame) return;
+        frame.removeAttribute("src");
+        frame.srcdoc = html;
+        setFrameSrc("");
+
+        const idx = histIdxRef.current;
+        setHistory((h) => [...h.slice(0, idx + 1), normalized]);
+        setHistIdx(idx + 1);
+      } finally {
+        setLoading(false);
       }
-      const res = await fetch(toProxyPath(normalized), init);
-      const html = await res.text();
-      const frame = iframeRef.current;
-      if (!frame) return;
-      frame.removeAttribute("src");
-      frame.srcdoc = html;
-      setFrameSrc("");
-
-      const idx = histIdxRef.current;
-      setHistory((h) => [...h.slice(0, idx + 1), normalized]);
-      setHistIdx(idx + 1);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
-      const data = e.data as { type?: string; url?: string; method?: string; data?: Record<string, string> };
+      const data = e.data as {
+        type?: string;
+        url?: string;
+        method?: string;
+        data?: Record<string, string>;
+      };
       if (data?.type === "navigate" && typeof data.url === "string") {
         navigate(data.url, true);
       } else if (data?.type === "formSubmit" && typeof data.url === "string") {
-        const msg = data as FormMessage;
-        void submitForm(msg.url, msg.method ?? "GET", msg.data ?? {});
+        void submitForm(data.url, data.method ?? "GET", data.data ?? {});
       }
     };
     window.addEventListener("message", onMessage);
@@ -184,7 +192,7 @@ export default function ProxyBrowserPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Enter URL (e.g., example.com)"
+            placeholder="Enter URL (e.g. crazygames.com)"
             spellCheck={false}
           />
           <button className="go" type="submit" disabled={!input.trim() || loading}>
@@ -197,7 +205,10 @@ export default function ProxyBrowserPage() {
         <div className="home">
           <div>
             <h1>Web Proxy Browser</h1>
-            <p>Browse websites through the proxy. Enter a URL above or try an example.</p>
+            <p>
+              Browse and play web games. Game iframes load from their real servers (like normal) for
+              best compatibility.
+            </p>
           </div>
           <div className="examples">
             {EXAMPLES.map((ex) => (
@@ -207,12 +218,11 @@ export default function ProxyBrowserPage() {
             ))}
           </div>
           <div className="tips">
-            <strong>How it works</strong>
+            <strong>Tips</strong>
             <ul>
-              <li>Pages load directly in the frame for faster rendering</li>
-              <li>Links, images, CSS, and scripts are rewritten to stay on the proxy</li>
-              <li>Works in embedded browsers via postMessage</li>
-              <li>Complex JS apps may still have limits</li>
+              <li>CrazyGames and similar portals work best — games run in their own frame</li>
+              <li>First load may take a few seconds; repeat visits are cached</li>
+              <li>Some sites (Roblox, Netflix) block proxies entirely</li>
             </ul>
           </div>
         </div>
@@ -223,7 +233,8 @@ export default function ProxyBrowserPage() {
             ref={iframeRef}
             src={frameSrc || undefined}
             title="Proxied page"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+            className="game-frame"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gamepad; gyroscope; microphone; midi; payment; picture-in-picture; web-share; xr-spatial-tracking"
             onLoad={onFrameLoad}
           />
         </div>

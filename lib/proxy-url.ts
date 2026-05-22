@@ -64,7 +64,14 @@ export function resolveAgainstBase(href: string, base: URL): string | null {
 }
 
 const ASSET_EXT =
-  /\.(css|js|mjs|cjs|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|mp4|webm|mp3|wav)(\?|$)/i;
+  /\.(css|js|mjs|cjs|map|wasm|unityweb|data|br|json|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|ogg|atlas)(\?|$)/i;
+
+export function assetCacheControl(url: URL): string {
+  if (/[.\-][a-f0-9]{8,}\./i.test(url.pathname) || /[?&]v=/i.test(url.search)) {
+    return "public, max-age=86400, s-maxage=604800, immutable";
+  }
+  return "public, max-age=3600, s-maxage=86400";
+}
 
 export function looksLikeAsset(url: URL, contentType: string): boolean {
   if (ASSET_EXT.test(url.pathname)) return true;
@@ -75,7 +82,11 @@ export function looksLikeAsset(url: URL, contentType: string): boolean {
     ct.includes("font/") ||
     ct.includes("javascript") ||
     ct.includes("text/css") ||
-    ct.includes("application/octet-stream")
+    ct.includes("application/wasm") ||
+    ct.includes("application/json") ||
+    ct.includes("application/octet-stream") ||
+    ct.includes("video/") ||
+    ct.includes("audio/")
   ) {
     return true;
   }

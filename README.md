@@ -57,4 +57,11 @@ Example: VM Desktop sets `PROXY_ORIGIN` in its `proxy.ts` to your Vercel URL.
 
 **Often broken:** Roblox, Google, Netflix, banking, and most games. They block proxy/datacenter IPs (`Request forbidden by administrative rules`) or need WebGL/WebSocket/real login — an HTML proxy cannot run those like a normal browser.
 
-After deploying, test with `example.com` or `wikipedia.org` first.
+After deploying, test **CrazyGames** (`crazygames.com`) — games should load in their iframe like normal.
+
+### Game sites (CrazyGames, etc.)
+
+- Portal HTML goes through the proxy
+- **Game iframes and CDN assets use their real URLs** (not double-proxied) so WebGL/Unity games can run
+- Iframe has no sandbox lock — fullscreen and gamepad allowed
+- Asset cache in service worker for faster repeat loads

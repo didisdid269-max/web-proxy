@@ -1,64 +1,53 @@
-/** Service worker: routes same-origin asset requests through /api/proxy */
+/** Service worker: cache assets + fix stray same-origin requests */
 export const SERVICE_WORKER_SCRIPT = `
-self.addEventListener("install", function (e) {
-  e.waitUntil(self.skipWaiting());
-});
-self.addEventListener("activate", function (e) {
-  e.waitUntil(self.clients.claim());
-});
-self.addEventListener("fetch", function (e) {
-  var reqUrl = new URL(e.request.url);
-  if (reqUrl.pathname.indexOf("/api/proxy") === 0) return;
-  if (reqUrl.pathname === "/sw.js") return;
-
-  var cookie = e.request.headers.get("cookie") || "";
-  var match = cookie.match(/(?:^|;\\s*)__proxy_base=([^;]+)/);
-  if (!match) return;
-
-  var baseHref;
-  try {
-    baseHref = decodeURIComponent(match[1]);
-  } catch (err) {
-    return;
-  }
-
+var CACHE="proxy-assets-v2";
+self.addEventListener("install",function(e){e.waitUntil(self.skipWaiting());});
+self.addEventListener("activate",function(e){e.waitUntil(self.clients.claim());});
+function getBase(cookie){
+  var m=(cookie||"").match(/(?:^|;\\s*)__proxy_base=([^;]+)/);
+  if(!m)return null;
+  try{return decodeURIComponent(m[1]);}catch(e){return null;}
+}
+self.addEventListener("fetch",function(e){
+  var u=new URL(e.request.url);
+  if(u.pathname.indexOf("/api/proxy")===0)return;
+  if(u.pathname==="/sw.js")return;
+  var base=getBase(e.request.headers.get("cookie"));
+  if(!base)return;
   var target;
-  try {
-    target = new URL(
-      reqUrl.pathname + reqUrl.search + reqUrl.hash,
-      baseHref,
-    ).href;
-  } catch (err2) {
+  try{target=new URL(u.pathname+u.search+u.hash,base).href;}catch(err){return;}
+  var proxyUrl="/api/proxy?url="+encodeURIComponent(target);
+  if(e.request.method!=="GET"){
+    e.respondWith(fetch(proxyUrl,{method:e.request.method,body:e.request.body,credentials:"include"}));
     return;
   }
-
   e.respondWith(
-    (async function () {
-      var init = {
-        method: e.request.method,
-        credentials: "include",
-        redirect: "follow",
-      };
-      if (e.request.method !== "GET" && e.request.method !== "HEAD") {
-        init.body = await e.request.arrayBuffer();
-      }
-      return fetch(
-        "/api/proxy?url=" + encodeURIComponent(target),
-        init,
-      );
-    })(),
+    caches.open(CACHE).then(function(cache){
+      return cache.match(e.request).then(function(hit){
+        if(hit)return hit;
+        return fetch(proxyUrl,{credentials:"include",redirect:"follow"}).then(function(res){
+          if(res.ok&&res.status===200){
+            var ct=res.headers.get("content-type")||"";
+            if(/image|font|css|javascript|wasm|octet-stream/i.test(ct)){
+              cache.put(e.request,res.clone());
+            }
+          }
+          return res;
+        });
+      });
+    })
   );
 });
 `.trim();
 
 export function buildSwRegistration(): string {
   return `<script id="proxy-sw">(function(){
-if(!("serviceWorker" in navigator))return;
-navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(function(){});
+if(!("serviceWorker"in navigator))return;
+navigator.serviceWorker.register("/sw.js",{scope:"/"}).then(function(){navigator.serviceWorker.ready;}).catch(function(){});
 })();</script>`;
 }
 
 export function proxyBaseCookie(target: URL): string {
   const value = encodeURIComponent(target.href);
-  return `__proxy_base=${value}; Path=/; SameSite=Lax; Max-Age=3600; Secure`;
+  return `__proxy_base=${value}; Path=/; SameSite=Lax; Max-Age=7200; Secure`;
 }

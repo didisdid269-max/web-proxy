@@ -1,5 +1,6 @@
 import { fetchUpstream, corsHeaders, stripFrameHeaders } from "@/lib/fetch-upstream";
 import {
+  assetCacheControl,
   getProxyOrigin,
   looksLikeAsset,
   parseTargetUrl,
@@ -71,7 +72,7 @@ async function handleProxy(request: Request): Promise<Response> {
       headers: {
         ...Object.fromEntries(headers),
         ...corsHeaders(),
-        "Cache-Control": "public, max-age=3600, s-maxage=86400",
+        "Cache-Control": assetCacheControl(target),
       },
     });
   }
@@ -113,13 +114,16 @@ async function handleProxy(request: Request): Promise<Response> {
     /\.m?js(\?|$)/i.test(target.pathname);
 
   if (isJs) {
-    const js = rewriteJavaScript(text, target, proxyOrigin);
+    const js =
+      text.length < 500_000
+        ? rewriteJavaScript(text, target, proxyOrigin)
+        : text;
     return new Response(js, {
       status: upstream.status,
       headers: {
         "Content-Type": contentType || "application/javascript; charset=utf-8",
         ...corsHeaders(),
-        "Cache-Control": "public, max-age=300",
+        "Cache-Control": assetCacheControl(target),
       },
     });
   }

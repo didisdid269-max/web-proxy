@@ -1,11 +1,14 @@
-/** Runs first in proxied pages so fetch/XHR and dynamic assets use the proxy. */
+/** Lightweight runtime: only fix broken same-origin paths, let game CDNs load direct. */
 export function buildRuntimeScript(target: URL, currentPath: string): string {
   const origin = target.origin;
   const path = currentPath || target.pathname || "/";
+  const pageOrigin = target.origin;
   return `<script id="proxy-runtime">(function(){
 var O=${JSON.stringify(origin)};
 var P=${JSON.stringify(path)};
+var SITE=${JSON.stringify(pageOrigin)};
 var X="/api/proxy?url=";
+var LO=location.origin;
 function extract(h){
   if(!h)return null;
   var m=String(h).match(/[?&]url=([^&]+)/);
@@ -30,8 +33,17 @@ function prox(u){
   return a?X+encodeURIComponent(a):u;
 }
 function shouldProxy(u){
-  var a=absUrl(u);
-  return !!a;
+  if(!u)return false;
+  u=String(u);
+  if(/^https?:\\/\\//i.test(u)){
+    if(u.indexOf("/api/proxy")!==-1)return true;
+    try{
+      var parsed=new URL(u);
+      if(parsed.origin===LO&&parsed.pathname.indexOf("/api/proxy")!==0)return true;
+    }catch(e){}
+    return false;
+  }
+  return !!absUrl(u);
 }
 function fixInput(input){
   if(typeof input==="string")return shouldProxy(input)?prox(input):input;
@@ -39,49 +51,33 @@ function fixInput(input){
   return input;
 }
 var of=window.fetch;
-if(of)window.fetch=function(input,init){
-  try{input=fixInput(input);}catch(e){}
-  return of.call(this,input,init);
-};
-if(window.Request){
-  var OR=window.Request;
-  window.Request=function(input,init){
-    try{return new OR(fixInput(input),init);}catch(e){return new OR(input,init);}
-  };
-  window.Request.prototype=OR.prototype;
-}
+if(of)window.fetch=function(i,n){try{i=fixInput(i);}catch(e){}return of.call(this,i,n);};
 var xo=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(){
-  try{
-    if(arguments.length>1&&typeof arguments[1]==="string"&&shouldProxy(arguments[1])){
-      arguments[1]=prox(arguments[1]);
-    }
-  }catch(e){}
+  try{if(arguments.length>1&&typeof arguments[1]==="string"&&shouldProxy(arguments[1]))arguments[1]=prox(arguments[1]);}catch(e){}
   return xo.apply(this,arguments);
 };
 var sa=Element.prototype.setAttribute;
 Element.prototype.setAttribute=function(n,v){
-  if((n==="src"||n==="href"||n==="action"||n==="poster"||n==="data-src")&&typeof v==="string"){
-    try{if(shouldProxy(v))v=prox(v);}catch(e){}
-  }
+  if(typeof v==="string"&&(n==="src"||n==="href"||n==="action")&&shouldProxy(v))v=prox(v);
   return sa.call(this,n,v);
 };
 function patchSrc(proto,prop){
-  if(!proto||!Object.getOwnPropertyDescriptor(proto,prop))return;
+  if(!proto)return;
   var d=Object.getOwnPropertyDescriptor(proto,prop);
   if(!d||!d.set)return;
-  Object.defineProperty(proto,prop,{
-    get:d.get,
-    set:function(v){d.set.call(this,typeof v==="string"&&shouldProxy(v)?prox(v):v);},
-    configurable:true
-  });
+  Object.defineProperty(proto,prop,{get:d.get,set:function(v){if(typeof v==="string"&&shouldProxy(v))v=prox(v);d.set.call(this,v);},configurable:true});
 }
 try{
   patchSrc(HTMLScriptElement.prototype,"src");
   patchSrc(HTMLImageElement.prototype,"src");
   patchSrc(HTMLLinkElement.prototype,"href");
-  patchSrc(HTMLIFrameElement.prototype,"src");
 }catch(e){}
+var OW=window.Worker;
+if(OW)window.Worker=function(u,o){
+  if(typeof u==="string"&&shouldProxy(u))u=prox(u);
+  return new OW(u,o);
+};
 })();
 </script>`;
 }
