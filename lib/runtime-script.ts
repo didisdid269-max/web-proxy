@@ -33,14 +33,23 @@ function shouldProxy(u){
   var a=absUrl(u);
   return !!a;
 }
+function fixInput(input){
+  if(typeof input==="string")return shouldProxy(input)?prox(input):input;
+  if(input&&input.url&&shouldProxy(input.url))return new Request(prox(input.url),input);
+  return input;
+}
 var of=window.fetch;
 if(of)window.fetch=function(input,init){
-  try{
-    if(typeof input==="string"){if(shouldProxy(input))input=prox(input);}
-    else if(input&&input.url){var u=input.url;if(shouldProxy(u))input=new Request(prox(u),input);}
-  }catch(e){}
+  try{input=fixInput(input);}catch(e){}
   return of.call(this,input,init);
 };
+if(window.Request){
+  var OR=window.Request;
+  window.Request=function(input,init){
+    try{return new OR(fixInput(input),init);}catch(e){return new OR(input,init);}
+  };
+  window.Request.prototype=OR.prototype;
+}
 var xo=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(){
   try{

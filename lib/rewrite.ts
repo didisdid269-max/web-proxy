@@ -1,14 +1,16 @@
 import { resolveAgainstBase, toProxyUrl } from "./proxy-url";
 import { buildRuntimeScript } from "./runtime-script";
+import { buildSwRegistration } from "./service-worker";
 
-const ATTR_RE =
-  /\b(href|src|action|poster|data-src|data-background|data-href)\s*=\s*(["'])([^"']*)\2/gi;
-const UNQUOTED_ATTR_RE =
-  /\b(href|src|action)\s*=\s*([^\s>"']+)/gi;
 const SRCSET_RE = /\bsrcset\s*=\s*(["'])([^"']+)\1/gi;
 const STYLE_URL_RE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
-const CSS_IMPORT_RE = /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(["'])([^"']+)\3)/gi;
+const CSS_IMPORT_RE =
+  /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(["'])([^"']+)\3)/gi;
 const STYLE_BLOCK_RE = /<style([^>]*)>([\s\S]*?)<\/style>/gi;
+
+/** Attributes that load subresources — rewrite so they work when base tag isn't enough */
+const RESOURCE_ATTR_RE =
+  /\b(src|href|srcset|data-src|data-href|poster|content)\s*=\s*(["'])([^"']*)\2/gi;
 
 function rewriteSrcset(value: string, base: URL, proxyOrigin: string): string {
   return value
@@ -35,14 +37,19 @@ function rewriteUrlsInText(
     if (!resolved) return `url(${quote}${value}${quote})`;
     return `url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
   });
-  out = out.replace(CSS_IMPORT_RE, (_m, q1: string, u1: string, q2: string, u2: string) => {
-    const raw = u1 || u2;
-    const quote = q1 || q2 || '"';
-    const resolved = resolveAgainstBase(raw, base);
-    if (!resolved) return _m;
-    if (q1 || u1) return `@import url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
-    return `@import ${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
-  });
+  out = out.replace(
+    CSS_IMPORT_RE,
+    (_m, q1: string, u1: string, q2: string, u2: string) => {
+      const raw = u1 || u2;
+      const quote = q1 || q2 || '"';
+      const resolved = resolveAgainstBase(raw, base);
+      if (!resolved) return _m;
+      if (q1 || u1) {
+        return `@import url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
+      }
+      return `@import ${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
+    },
+  );
   return out;
 }
 
@@ -56,10 +63,23 @@ function stripBlockingTags(html: string): string {
     .replace(/<base[^>]*>/gi, "");
 }
 
+function escapeHtmlAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+export function buildHeadInjection(target: URL): string {
+  const baseHref = escapeHtmlAttr(target.href);
+  return [
+    `<base href="${baseHref}">`,
+    buildSwRegistration(),
+    buildRuntimeScript(target, target.pathname),
+  ].join("");
+}
+
 export function buildNavigateScript(target: URL, currentPath: string): string {
   const base = target.origin;
   const path = currentPath || target.pathname || "/";
-  return `<script>
+  return `<script id="proxy-nav">
 (function(){
   var ORIGIN=${JSON.stringify(base)};
   var PATH=${JSON.stringify(path)};
@@ -86,14 +106,13 @@ export function buildNavigateScript(target: URL, currentPath: string): string {
   function go(url){
     var abs=/^https?:\\/\\//i.test(url)?url:resolve(url);
     if(!abs)return;
-    var proxy="/api/proxy?url="+encodeURIComponent(abs);
     try{
       if(window.parent&&window.parent!==window){
         window.parent.postMessage({type:"navigate",url:abs},"*");
         return;
       }
     }catch(e){}
-    location.href=proxy;
+    location.href="/api/proxy?url="+encodeURIComponent(abs);
   }
   document.addEventListener("click",function(e){
     var a=e.target.closest&&e.target.closest("a");
@@ -146,6 +165,29 @@ function injectIntoHead(html: string, injection: string): string {
   return injection + html;
 }
 
+function rewriteResourceAttrs(
+  html: string,
+  target: URL,
+  proxyOrigin: string,
+): string {
+  return html.replace(
+    RESOURCE_ATTR_RE,
+    (match, attr: string, quote: string, value: string) => {
+      const v = value.trim();
+      if (
+        !v ||
+        v.startsWith("#") ||
+        /^javascript:|^mailto:|^tel:|^data:/i.test(v)
+      ) {
+        return match;
+      }
+      const resolved = resolveAgainstBase(value, target);
+      if (!resolved) return match;
+      return `${attr}=${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
+    },
+  );
+}
+
 export function rewriteHtml(
   html: string,
   target: URL,
@@ -159,27 +201,15 @@ export function rewriteHtml(
     return `<style${attrs}>${rewritten}</style>`;
   });
 
-  out = out.replace(ATTR_RE, (_match, attr: string, quote: string, value: string) => {
-    const resolved = resolveAgainstBase(value, target);
-    if (!resolved) return `${attr}=${quote}${value}${quote}`;
-    return `${attr}=${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
-  });
-
-  out = out.replace(UNQUOTED_ATTR_RE, (_match, attr: string, value: string) => {
-    const resolved = resolveAgainstBase(value, target);
-    if (!resolved) return `${attr}=${value}`;
-    return `${attr}="${toProxyUrl(resolved, proxyOrigin)}"`;
-  });
+  out = rewriteResourceAttrs(out, target, proxyOrigin);
 
   out = out.replace(SRCSET_RE, (_match, quote: string, value: string) => {
     return `srcset=${quote}${rewriteSrcset(value, target, proxyOrigin)}${quote}`;
   });
 
-  out = rewriteUrlsInText(out, target, proxyOrigin);
-
-  const runtime = buildRuntimeScript(target, currentPath);
+  const headInjection = buildHeadInjection(target);
   const navigate = buildNavigateScript(target, currentPath);
-  out = injectIntoHead(out, runtime);
+  out = injectIntoHead(out, headInjection);
 
   if (out.includes("</body>")) {
     out = out.replace(/<\/body>/i, `${navigate}</body>`);
@@ -195,15 +225,26 @@ export function rewriteCss(css: string, target: URL, proxyOrigin: string): strin
 }
 
 const JS_ABS_URL_RE = /(["'])(https?:\/\/[^"'\\\n\r]+)\1/g;
+const JS_REL_FETCH_RE =
+  /(\bfetch\s*\(\s*|\bopen\s*\(\s*[^,]+,\s*)(["'])(\/[^"']+)\2/g;
 
 export function rewriteJavaScript(
   js: string,
   target: URL,
   proxyOrigin: string,
 ): string {
-  return js.replace(JS_ABS_URL_RE, (_m, quote: string, url: string) => {
+  let out = js.replace(JS_ABS_URL_RE, (_m, quote: string, url: string) => {
     const resolved = resolveAgainstBase(url, target);
     if (!resolved) return `${quote}${url}${quote}`;
     return `${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
   });
+  out = out.replace(
+    JS_REL_FETCH_RE,
+    (_m, prefix: string, quote: string, path: string) => {
+      const resolved = resolveAgainstBase(path, target);
+      if (!resolved) return _m;
+      return `${prefix}${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
+    },
+  );
+  return out;
 }

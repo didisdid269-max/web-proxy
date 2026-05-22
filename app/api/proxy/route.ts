@@ -6,6 +6,7 @@ import {
 } from "@/lib/proxy-url";
 import { blockedPageHtml, isBlockedResponse } from "@/lib/blocked-page";
 import { rewriteCss, rewriteHtml, rewriteJavaScript } from "@/lib/rewrite";
+import { proxyBaseCookie } from "@/lib/service-worker";
 
 export const runtime = "edge";
 
@@ -134,12 +135,13 @@ async function handleProxy(request: Request): Promise<Response> {
   }
 
   const rewritten = rewriteHtml(text, target, proxyOrigin, pathParam);
-  return new Response(rewritten, {
-    status: upstream.status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      ...corsHeaders(),
-      "Cache-Control": "private, no-cache",
-    },
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "private, no-cache",
+    "Set-Cookie": proxyBaseCookie(target),
   });
+  for (const [k, v] of Object.entries(corsHeaders())) {
+    headers.set(k, v);
+  }
+  return new Response(rewritten, { status: upstream.status, headers });
 }
