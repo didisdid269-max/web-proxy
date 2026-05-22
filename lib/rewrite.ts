@@ -1,9 +1,14 @@
 import { resolveAgainstBase, toProxyUrl } from "./proxy-url";
+import { buildRuntimeScript } from "./runtime-script";
 
 const ATTR_RE =
-  /\b(href|src|action|poster|data-src)\s*=\s*(["'])([^"']*)\2/gi;
+  /\b(href|src|action|poster|data-src|data-background|data-href)\s*=\s*(["'])([^"']*)\2/gi;
+const UNQUOTED_ATTR_RE =
+  /\b(href|src|action)\s*=\s*([^\s>"']+)/gi;
 const SRCSET_RE = /\bsrcset\s*=\s*(["'])([^"']+)\1/gi;
 const STYLE_URL_RE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+const CSS_IMPORT_RE = /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(["'])([^"']+)\3)/gi;
+const STYLE_BLOCK_RE = /<style([^>]*)>([\s\S]*?)<\/style>/gi;
 
 function rewriteSrcset(value: string, base: URL, proxyOrigin: string): string {
   return value
@@ -20,12 +25,34 @@ function rewriteSrcset(value: string, base: URL, proxyOrigin: string): string {
     .join(", ");
 }
 
+function rewriteUrlsInText(
+  text: string,
+  base: URL,
+  proxyOrigin: string,
+): string {
+  let out = text.replace(STYLE_URL_RE, (_m, quote: string, value: string) => {
+    const resolved = resolveAgainstBase(value.trim(), base);
+    if (!resolved) return `url(${quote}${value}${quote})`;
+    return `url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
+  });
+  out = out.replace(CSS_IMPORT_RE, (_m, q1: string, u1: string, q2: string, u2: string) => {
+    const raw = u1 || u2;
+    const quote = q1 || q2 || '"';
+    const resolved = resolveAgainstBase(raw, base);
+    if (!resolved) return _m;
+    if (q1 || u1) return `@import url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
+    return `@import ${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
+  });
+  return out;
+}
+
 function stripBlockingTags(html: string): string {
   return html
     .replace(
       /<meta[^>]+http-equiv=["']?content-security-policy[^>]*>/gi,
       "",
     )
+    .replace(/<meta[^>]+http-equiv=["']?x-frame-options[^>]*>/gi, "")
     .replace(/<base[^>]*>/gi, "");
 }
 
@@ -104,10 +131,19 @@ export function buildNavigateScript(target: URL, currentPath: string): string {
         .then(function(html){document.open();document.write(html);document.close();});
     }
   },true);
-  var _open=window.open;
   window.open=function(u){go(u);return null;};
 })();
 </script>`;
+}
+
+function injectIntoHead(html: string, injection: string): string {
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${injection}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1><head>${injection}</head>`);
+  }
+  return injection + html;
 }
 
 export function rewriteHtml(
@@ -118,36 +154,56 @@ export function rewriteHtml(
 ): string {
   let out = stripBlockingTags(html);
 
+  out = out.replace(STYLE_BLOCK_RE, (_m, attrs: string, css: string) => {
+    const rewritten = rewriteUrlsInText(css, target, proxyOrigin);
+    return `<style${attrs}>${rewritten}</style>`;
+  });
+
   out = out.replace(ATTR_RE, (_match, attr: string, quote: string, value: string) => {
     const resolved = resolveAgainstBase(value, target);
     if (!resolved) return `${attr}=${quote}${value}${quote}`;
     return `${attr}=${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
   });
 
+  out = out.replace(UNQUOTED_ATTR_RE, (_match, attr: string, value: string) => {
+    const resolved = resolveAgainstBase(value, target);
+    if (!resolved) return `${attr}=${value}`;
+    return `${attr}="${toProxyUrl(resolved, proxyOrigin)}"`;
+  });
+
   out = out.replace(SRCSET_RE, (_match, quote: string, value: string) => {
     return `srcset=${quote}${rewriteSrcset(value, target, proxyOrigin)}${quote}`;
   });
 
-  out = out.replace(STYLE_URL_RE, (_match, quote: string, value: string) => {
-    const resolved = resolveAgainstBase(value.trim(), target);
-    if (!resolved) return `url(${quote}${value}${quote})`;
-    return `url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
-  });
+  out = rewriteUrlsInText(out, target, proxyOrigin);
 
-  const script = buildNavigateScript(target, currentPath);
+  const runtime = buildRuntimeScript(target, currentPath);
+  const navigate = buildNavigateScript(target, currentPath);
+  out = injectIntoHead(out, runtime);
+
   if (out.includes("</body>")) {
-    out = out.replace(/<\/body>/i, `${script}</body>`);
+    out = out.replace(/<\/body>/i, `${navigate}</body>`);
   } else {
-    out += script;
+    out += navigate;
   }
 
   return out;
 }
 
 export function rewriteCss(css: string, target: URL, proxyOrigin: string): string {
-  return css.replace(STYLE_URL_RE, (_match, quote: string, value: string) => {
-    const resolved = resolveAgainstBase(value.trim(), target);
-    if (!resolved) return `url(${quote}${value}${quote})`;
-    return `url(${quote}${toProxyUrl(resolved, proxyOrigin)}${quote})`;
+  return rewriteUrlsInText(css, target, proxyOrigin);
+}
+
+const JS_ABS_URL_RE = /(["'])(https?:\/\/[^"'\\\n\r]+)\1/g;
+
+export function rewriteJavaScript(
+  js: string,
+  target: URL,
+  proxyOrigin: string,
+): string {
+  return js.replace(JS_ABS_URL_RE, (_m, quote: string, url: string) => {
+    const resolved = resolveAgainstBase(url, target);
+    if (!resolved) return `${quote}${url}${quote}`;
+    return `${quote}${toProxyUrl(resolved, proxyOrigin)}${quote}`;
   });
 }

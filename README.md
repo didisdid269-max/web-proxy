@@ -50,3 +50,11 @@ https://YOUR-APP.vercel.app/api/proxy?url=<encoded-target-url>
 ```
 
 Example: VM Desktop sets `PROXY_ORIGIN` in its `proxy.ts` to your Vercel URL.
+
+## What works vs what does not
+
+**Works well:** mostly static sites (Wikipedia, Hacker News, blogs, simple shops).
+
+**Often broken:** Roblox, Google, Netflix, banking, and most games. They block proxy/datacenter IPs (`Request forbidden by administrative rules`) or need WebGL/WebSocket/real login — an HTML proxy cannot run those like a normal browser.
+
+After deploying, test with `example.com` or `wikipedia.org` first.

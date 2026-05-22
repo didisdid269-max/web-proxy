@@ -4,7 +4,8 @@ import {
   looksLikeAsset,
   parseTargetUrl,
 } from "@/lib/proxy-url";
-import { rewriteCss, rewriteHtml } from "@/lib/rewrite";
+import { blockedPageHtml, isBlockedResponse } from "@/lib/blocked-page";
+import { rewriteCss, rewriteHtml, rewriteJavaScript } from "@/lib/rewrite";
 
 export const runtime = "edge";
 
@@ -77,6 +78,17 @@ async function handleProxy(request: Request): Promise<Response> {
   const text = await upstream.text();
   const lower = contentType.toLowerCase();
 
+  if (isBlockedResponse(upstream.status, text)) {
+    return new Response(blockedPageHtml(target.href, upstream.status, text), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        ...corsHeaders(),
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
   if (lower.includes("text/css")) {
     const css = rewriteCss(text, target, proxyOrigin);
     return new Response(css, {
@@ -93,6 +105,23 @@ async function handleProxy(request: Request): Promise<Response> {
     lower.includes("text/html") ||
     text.trimStart().toLowerCase().startsWith("<!doctype") ||
     text.trimStart().toLowerCase().startsWith("<html");
+
+  const isJs =
+    lower.includes("javascript") ||
+    lower.includes("ecmascript") ||
+    /\.m?js(\?|$)/i.test(target.pathname);
+
+  if (isJs) {
+    const js = rewriteJavaScript(text, target, proxyOrigin);
+    return new Response(js, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": contentType || "application/javascript; charset=utf-8",
+        ...corsHeaders(),
+        "Cache-Control": "public, max-age=300",
+      },
+    });
+  }
 
   if (!isHtml) {
     return new Response(text, {

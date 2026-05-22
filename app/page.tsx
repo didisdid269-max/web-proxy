@@ -223,7 +223,7 @@ export default function ProxyBrowserPage() {
             ref={iframeRef}
             src={frameSrc || undefined}
             title="Proxied page"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
             onLoad={onFrameLoad}
           />
         </div>

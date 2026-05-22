@@ -1,24 +1,26 @@
-const UPSTREAM_HEADERS = [
-  "user-agent",
-  "accept",
-  "accept-language",
-  "accept-encoding",
-  "referer",
-  "cookie",
-  "content-type",
-  "content-length",
-];
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 export async function fetchUpstream(
   target: URL,
   request: Request,
 ): Promise<Response> {
   const headers = new Headers();
+  const clientUa = request.headers.get("user-agent");
   headers.set(
     "User-Agent",
-    request.headers.get("user-agent") ??
-      "Mozilla/5.0 (compatible; WebProxy/2.0; +https://vercel.app)",
+    clientUa && !/WebProxy|curl|bot/i.test(clientUa) ? clientUa : BROWSER_UA,
   );
+  const secDest = request.headers.get("sec-fetch-dest");
+  const secMode = request.headers.get("sec-fetch-mode");
+  const secSite = request.headers.get("sec-fetch-site");
+  if (secDest) headers.set("Sec-Fetch-Dest", secDest);
+  else headers.set("Sec-Fetch-Dest", "document");
+  if (secMode) headers.set("Sec-Fetch-Mode", secMode);
+  if (secSite) headers.set("Sec-Fetch-Site", secSite);
+  if (!secDest || secDest === "document") {
+    headers.set("Upgrade-Insecure-Requests", "1");
+  }
   headers.set("Accept", request.headers.get("accept") ?? "*/*");
   headers.set(
     "Accept-Language",
